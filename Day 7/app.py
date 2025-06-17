@@ -11,21 +11,22 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS
 from langchain.chains import RetrievalQA
 
-import os
 from langchain_google_genai import ChatGoogleGenerativeAI
+
+llm = ChatGoogleGenerativeAI(
+    model="models/gemini-2.0-flash",   # ✅ Use a correct model name
+    temperature=0.2,
+    convert_system_message_to_human=True
+)
+
+
 
 # Set Gemini API Key
 os.environ["GOOGLE_API_KEY"] = "AIzaSyATxu5mFwegMrmPw0X0rb88b1wf40xR-jM"
 
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
-    temperature=0,
-    max_tokens=None,
-    timeout=None,
-    max_retries=2,
-    # other params...
-)
+
+
 # ------------------------------------------------------------------
 # 0️⃣  STREAMLIT CONFIG + KEY INPUT
 # ------------------------------------------------------------------
@@ -46,21 +47,53 @@ os.environ["GOOGLE_API_KEY"] = api_key  # shove it into env so LangChain can see
 # ------------------------------------------------------------------
 # 1️⃣  MODELS & RAG BACKEND
 # ------------------------------------------------------------------
-llm = ChatGoogleGenerativeAI(model="gemini-2.0-Flash", google_api_key=api_key)
+llm = ChatGoogleGenerativeAI(model="models/gemini-2.0-flash", google_api_key=api_key)
 embedder = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
 
-@st.cache_resource(show_spinner="📚 Indexing HR policy docs…")
-def _build_retriever(path="docs/hr_policies.pdf"):
-    loader = PyPDFLoader(path)
-    pages = loader.load()
+
+from langchain.document_loaders import PyPDFLoader, TextLoader, UnstructuredWordDocumentLoader
+from langchain.document_loaders import UnstructuredFileLoader
+import tempfile
+
+# --------------------------
+# 🆕 File Uploader UI
+# --------------------------
+st.subheader("📁 Upload HR Policy Document")
+uploaded_file = st.file_uploader("Upload a PDF, TXT, or DOCX file", type=["pdf", "txt", "docx"])
+
+if not uploaded_file:
+    st.stop("📎 Upload an HR document to begin.")
+
+# --------------------------
+# 🧠 Dynamic Retriever Builder
+# --------------------------
+@st.cache_resource(show_spinner="📚 Indexing uploaded document…")
+def _build_dynamic_retriever(file):
+    # Save to temp file
+    suffix = "." + file.name.split(".")[-1]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(file.read())
+        tmp_path = tmp.name
+
+    # Pick loader
+    if suffix == ".pdf":
+        loader = PyPDFLoader(tmp_path)
+    elif suffix == ".txt":
+        loader = TextLoader(tmp_path)
+    elif suffix == ".docx":
+        loader = UnstructuredWordDocumentLoader(tmp_path)
+    else:
+        st.error("❌ Unsupported file type.")
+        st.stop()
+
+    docs = loader.load()
     splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=100)
-    chunks = splitter.split_documents(pages)
-    vs = FAISS.from_documents(chunks, embedder)
-    return vs.as_retriever(search_kwargs={"k": 4})
+    chunks = splitter.split_documents(docs)
+    vectordb = FAISS.from_documents(chunks, embedder)
+    return vectordb.as_retriever(search_kwargs={"k": 4})
 
-retriever = _build_retriever()
-qa_chain  = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
-
+retriever = _build_dynamic_retriever(uploaded_file)
+qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
 # ------------------------------------------------------------------
 # 2️⃣  AGENT CLASSES
 # ------------------------------------------------------------------
@@ -120,49 +153,7 @@ st.write(policy_info)
 
 action_msg = action_agent.run(intent)
 st.success(action_msg)
-from langchain.document_loaders import PyPDFLoader, TextLoader, UnstructuredWordDocumentLoader
-from langchain.document_loaders import UnstructuredFileLoader
-import tempfile
 
-# --------------------------
-# 🆕 File Uploader UI
-# --------------------------
-st.subheader("📁 Upload HR Policy Document")
-uploaded_file = st.file_uploader("Upload a PDF, TXT, or DOCX file", type=["pdf", "txt", "docx"])
-
-if not uploaded_file:
-    st.stop("📎 Upload an HR document to begin.")
-
-# --------------------------
-# 🧠 Dynamic Retriever Builder
-# --------------------------
-@st.cache_resource(show_spinner="📚 Indexing uploaded document…")
-def _build_dynamic_retriever(file):
-    # Save to temp file
-    suffix = "." + file.name.split(".")[-1]
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(file.read())
-        tmp_path = tmp.name
-
-    # Pick loader
-    if suffix == ".pdf":
-        loader = PyPDFLoader(tmp_path)
-    elif suffix == ".txt":
-        loader = TextLoader(tmp_path)
-    elif suffix == ".docx":
-        loader = UnstructuredWordDocumentLoader(tmp_path)
-    else:
-        st.error("❌ Unsupported file type.")
-        st.stop()
-
-    docs = loader.load()
-    splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=100)
-    chunks = splitter.split_documents(docs)
-    vectordb = FAISS.from_documents(chunks, embedder)
-    return vectordb.as_retriever(search_kwargs={"k": 4})
-
-retriever = _build_dynamic_retriever(uploaded_file)
-qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
 import streamlit as st
 
 def stop(_=None):
