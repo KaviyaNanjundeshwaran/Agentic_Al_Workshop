@@ -85,3 +85,103 @@ You are an HR Copilot designed to assist employees with common HR queries and ta
 - *Response*: [response text]
 - *Action* (if applicable): [action text]
 """)
+
+# Function to check for sensitive topics in the query (double-check)
+def check_sensitive_topics(query):
+    query = query.lower()
+    return any(topic in query for topic in SENSITIVE_TOPICS)
+
+# Function to process query using LangChain and Gemini
+def process_query(query, policy_data):
+    # Format the prompt with the query and policy data
+    policy_text = "\n".join([f"{key}: {value}" for key, value in policy_data.items()])
+    prompt_messages = hr_prompt.format_messages(query=query, policy_data=policy_text)
+
+    # Invoke Gemini via LangChain
+    result = llm.invoke(prompt_messages)
+    response_text = result.content
+
+    # Parse the response
+    intent_match = re.search(r"\\*Intent\\: (.?)\n", response_text)
+    response_match = re.search(r"\\*Response\\: (.?)(?:\n\\*Action\\*:|$)", response_text, re.DOTALL)
+    action_match = re.search(r"\\*Action\\: (.)", response_text)
+
+    intent = intent_match.group(1) if intent_match else "unknown"
+    response = response_match.group(1).strip() if response_match else "I'm sorry, I couldn't process your query."
+    action = action_match.group(1).strip() if action_match else None
+
+    # Double-check for sensitive topics in the query
+    if check_sensitive_topics(query):
+        intent = "escalate"
+
+    return intent, response, action
+
+# Function to escalate query to a human
+def escalate_query(query, conversation_history):
+    escalation_message = """
+    *Escalation to HR*  
+    This query requires human attention due to its sensitive nature.  
+    *Query*: {query}  
+    *Conversation Context*:  
+    {history}  
+    An HR representative will reach out to you soon.
+    """
+    history = "\n".join([f"- {msg}" for msg in conversation_history])
+    return escalation_message.format(query=query, history=history)
+
+# === Streamlit UI ===
+st.title("🤝 HR Copilot for Daily Ops")
+
+# Initialize conversation history in session state
+if "conversation_history" not in st.session_state:
+    st.session_state.conversation_history = []
+
+# Display conversation history
+st.subheader("Chat History")
+chat_container = st.container()
+with chat_container:
+    for message in st.session_state.conversation_history:
+        if message.startswith("*User*:"):
+            st.markdown(f"{message}", unsafe_allow_html=True)
+        else:
+            st.markdown(message, unsafe_allow_html=True)
+
+# Input box for user query
+st.subheader("Ask a Question")
+user_query = st.text_input("Type your query here (e.g., 'What's our leave policy?')", key="user_query")
+
+# Process the query when submitted
+if user_query:
+    # Add user query to conversation history
+    st.session_state.conversation_history.append(f"*User*: {user_query}")
+
+    # Process query using LangChain and Gemini
+    try:
+        intent, response, action = process_query(user_query, HR_POLICIES)
+
+        # Handle escalation for sensitive topics
+        if intent == "escalate":
+            escalation_response = escalate_query(user_query, st.session_state.conversation_history)
+            st.session_state.conversation_history.append(escalation_response)
+        else:
+            # Add the response to conversation history
+            st.session_state.conversation_history.append(response)
+
+            # Add action if applicable
+            if action:
+                st.session_state.conversation_history.append(f"*Action*: {action}")
+
+            # If intent is unknown, provide a fallback response
+            if intent == "unknown":
+                st.session_state.conversation_history.append("I’m not sure how to handle that. Would you like to escalate this to HR? (Type 'escalate' to proceed)")
+
+    except Exception as e:
+        st.session_state.conversation_history.append(f"Error processing query: {str(e)}")
+
+    # Refresh the page to display updated chat history
+    st.rerun()
+
+# Add a button to clear chat history
+if st.button("Clear Chat History"):
+    st.session_state.conversation_history = []
+    st.rerun()
